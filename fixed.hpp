@@ -134,19 +134,18 @@ struct fixed{
 				int_t prod = mul_intrinsic(o.bits[m - offset - 1], bits[i], &hi);
 				char add_overflow = !!adc_intrinsic(0, prod, carry, &prod);
 				add_overflow += !!adc_intrinsic(0, prod, accum.bits[i - offset], &accum.bits[i - offset]);
-				//adc_intrinsic<int_t>(0,hi,add_overflow,&carry);
 				carry = hi + add_overflow;
 			}
 		}
 		
 		for(ssize_t offset = 0;offset < n;offset++){
-			int_t carry = 0;
-			for(ssize_t i = m + n - offset - 1;i >= 0;i--){
-				int_t hi = 0;
+			int_t carry;
+			mul_intrinsic(o.bits[m + offset], bits[m + n - offset - 1], &carry);
+			for(ssize_t i = m + n - offset - 2;i >= 0;i--){
+				int_t hi;
 				int_t prod = mul_intrinsic(o.bits[m + offset], bits[i], &hi);
 				char add_overflow = !!adc_intrinsic(0, prod, carry, &prod);
 				add_overflow += !!adc_intrinsic(0, prod, accum.bits[i + offset + 1], &accum.bits[i + offset + 1]);
-				//adc_intrinsic<int_t>(0,hi,add_overflow,&carry);
 				carry = hi + add_overflow;
 			}
 			size_t o = offset;
