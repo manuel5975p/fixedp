@@ -266,5 +266,71 @@ struct fixed{
 		}
 		return out;
 	}
+	const int_t& operator[](size_t i)const{
+		return bits[i];
+	}
+	int_t& operator[](size_t i){
+		return bits[i];
+	}
+	fixed operator<<(int64_t c)const{
+		fixed a(*this);
+		a.shiftLeft(c);
+		return a;
+	}
+	fixed operator>>(int64_t c)const{
+		fixed a(*this);
+		a.shiftRight(c);
+		return a;
+	}
+	fixed operator<<=(int64_t c){
+		shiftLeft(c);
+		return *this;
+	}
+	fixed operator>>=(int64_t c){
+		shiftRight(c);
+		return *this;
+	}
+	void shiftLeft(const int64_t c){
+		if(c < 0)shiftRight(-c);
+		if(c == 0)return;
+		if(c >= (m + n) * sizeof(int_t) * CHAR_BIT){
+			std::fill(begin(), end(), 0);
+			return;
+		}
+		const int64_t cs = c / (CHAR_BIT * sizeof(int_t));
+		const int64_t bs = c % (CHAR_BIT * sizeof(int_t));
+		for(size_t i = 0;i < m + n - cs - 1;i++){
+			bits[i] = bits[i + cs] << bs | bits[i + cs + 1] >> (64 - bs);
+		}
+		bits[m + n - cs - 1] = bits.back() << bs;
+		for(size_t i = m + n - cs; i < m + n;i++){
+			bits[i] = 0;
+		}
+	}
+	void shiftRight(const int64_t c){
+		if(c < 0)shiftLeft(-c);
+		if(c == 0)return;
+		if(c >= (m + n) * sizeof(int_t) * CHAR_BIT){
+			std::fill(begin(), end(), 0);
+			return;
+		}
+		const int64_t cs = c / (CHAR_BIT * sizeof(int_t));
+		const int64_t bs = c % (CHAR_BIT * sizeof(int_t));
+		for(int64_t i = m + n - 1;i >= cs + 1;i--){
+			bits[i] = bits[i - cs] >> bs | bits[i - cs - 1] << (64 - bs);
+		}
+		bits[cs] = bits.front() >> bs;
+		for(size_t i = 0; i < cs;i++){
+			bits[i] = 0;
+		}
+	}
+	constexpr auto begin(){return bits.begin();}
+	constexpr auto cbegin(){return bits.cbegin();}
+	constexpr auto rbegin(){return bits.rbegin();}
+	constexpr auto crbegin(){return bits.crbegin();}
+	constexpr auto   end(){return bits.  end();}
+	constexpr auto  cend(){return bits. cend();}
+	constexpr auto  rend(){return bits. rend();}
+	constexpr auto crend(){return bits.crend();}
 };
 #endif

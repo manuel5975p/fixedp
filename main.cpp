@@ -14,7 +14,7 @@ uint64_t nanoTime(){
 int main(){
 	xoshiro_256 gen(42);
 	std::cout << std::setprecision(1000);
-	fixed<1, 9> a;
+	fixed<1, 2> a;
 	std::generate(a.bits.begin(), a.bits.end(), std::ref(gen));
 	
 	std::vector<uint64_t> times;
