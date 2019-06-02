@@ -10,9 +10,10 @@
 #include <deque>
 #include <string>
 #include <sstream>
+#ifdef GMP_CONVERSIONS
 #include <gmpxx.h>
+#endif
 #include <iostream>
-#include <xoshiro.hpp>
 #include <functional>
 using std::size_t;
 using std::uint64_t;
@@ -41,6 +42,17 @@ char adc_intrinsic<uint32_t>(char in_flag, uint32_t a, uint32_t b, uint32_t* sto
 	return _addcarry_u32(in_flag, a, b, (unsigned int*)stor);
 };
 
+template<typename int_t> char sbb_intrinsic(char in_flag, int_t a, int_t b, int_t* stor){return 0;};
+
+template<>
+char sbb_intrinsic<uint64_t>(char in_flag, uint64_t a, uint64_t b, uint64_t* stor){
+	return _subborrow_u64(in_flag, a, b, (unsigned long long*)stor);
+};
+template<>
+char sbb_intrinsic<uint32_t>(char in_flag, uint32_t a, uint32_t b, uint32_t* stor){
+	return _subborrow_u32(in_flag, a, b, (unsigned int*)stor);
+};
+
 template<typename int_t> int_t mul_intrinsic(int_t a, int_t b, int_t* hi){return 0;};
 
 template<>
@@ -54,7 +66,42 @@ uint32_t mul_intrinsic<uint32_t>(uint32_t a, uint32_t b, uint32_t* hi){
 	*hi = _a >> 32;
 	return _a;
 };
+template<typename int_t>
+int_t lzcnt_intrinsic(int_t x){
 
+}
+template<typename int_t>
+int_t tzcnt_intrinsic(int_t x){
+
+}
+template<typename int_t>
+int_t popcnt_intrinsic(int_t x){
+
+}
+template<>
+uint64_t lzcnt_intrinsic<uint64_t>(uint64_t x){
+	return _lzcnt_u64(x);
+}
+template<>
+uint64_t tzcnt_intrinsic<uint64_t>(uint64_t x){
+	return _tzcnt_u64(x);
+}
+template<>
+uint64_t popcnt_intrinsic<uint64_t>(uint64_t x){
+	return _popcnt64(x);
+}
+template<>
+uint32_t lzcnt_intrinsic<uint32_t>(uint32_t x){
+	return _lzcnt_u32(x);
+}
+template<>
+uint32_t tzcnt_intrinsic<uint32_t>(uint32_t x){
+	return _tzcnt_u32(x);
+}
+template<>
+uint32_t popcnt_intrinsic<uint32_t>(uint32_t x){
+	return _popcnt32(x);
+}
 template<size_t n, typename int_t>
 struct pointer_adder{
 	pointer_adder(){}
@@ -71,6 +118,22 @@ struct pointer_adder<0, int_t>{
 	}
 };
 
+template<size_t n, typename int_t>
+struct pointer_subtractor{
+	pointer_subtractor(){}
+	void operator()(int_t* first, const int_t* second, bool carry){
+		pointer_subtractor<n - 1, int_t>()(first, second, sbb_intrinsic<int_t>(carry, first[n], second[n], first + n));
+	}
+};
+
+template<typename int_t>
+struct pointer_subtractor<0, int_t>{
+	pointer_subtractor(){}
+	void operator()(int_t* first, const int_t* second, bool carry){
+		sbb_intrinsic<int_t>(carry, first[0], second[0], first);
+	}
+};
+
 template<size_t m, size_t n, typename int_t = uint64_t>
 struct fixed{
 	std::array<int_t, m + n> bits;
@@ -82,11 +145,16 @@ struct fixed{
 	fixed(){
 		std::fill(bits.begin(), bits.end(), 0);
 	}
-	fixed(xoshiro_256& gen){
+	template<typename RNG>
+	fixed(RNG& gen, bool dummy){
 		std::generate(bits.begin(), bits.end(), std::ref(gen));
 	}
 	fixed& operator+=(const fixed<m,n,int_t>& o){
 		pointer_adder<m + n - 1, int_t>()(bits.data(), o.bits.data(), 0);
+		return *this;
+	}
+	fixed& operator-=(const fixed<m,n,int_t>& o){
+		pointer_subtractor<m + n - 1, int_t>()(bits.data(), o.bits.data(), 0);
 		return *this;
 	}
 	
@@ -125,7 +193,7 @@ struct fixed{
 		return *this;
 	}
 	
-	fixed operator*(const fixed<m, n, int_t>& o){
+	fixed operator*(const fixed<m, n, int_t>& o)const{
 		fixed<m, n> accum;
 		for(ssize_t offset = 0;offset < m;offset++){
 			int_t carry = 0;
@@ -153,7 +221,35 @@ struct fixed{
 		}
 		return accum;
 	}
-	
+
+	fixed operator/(const fixed<m, n>& o)const{
+		int64_t shift = 0;
+		fixed<m, n> subber(o);
+		fixed<m, n> tcopy(*this);
+		fixed<m, n> result;
+		
+		while(!tcopy.isZero()){
+			int64_t cshift = int64_t(int64_t(subber.lzcnt()) - int64_t(tcopy.lzcnt()));
+			subber <<= cshift;
+			if(subber > tcopy){
+				subber >>= 1;
+				cshift--;
+			}
+			shift += cshift;
+			if(-shift > int64_t(n) * int64_t(sizeof(int_t)) * int64_t(CHAR_BIT)){
+				break;
+			}
+			tcopy -= subber;
+			result.putBit(shift);
+		}
+		return result;
+	}
+	bool isZero()const{
+		for(auto it = rbegin();it != rend();it++){
+			if(*it)return false;
+		}
+		return true;
+	}
 	template<size_t i>
 	void mult_comp(int_t mul, int_t carry){
 		int_t _carry = 0;
@@ -165,7 +261,10 @@ struct fixed{
 			mult_comp<i - 1>(mul, _carry);
 		}
 	}
-	
+	void putBit(int64_t offset){
+		int64_t chunk = (offset - int64_t(sizeof(int_t)) * int64_t(CHAR_BIT) + 1) / int64_t(sizeof(int_t) * CHAR_BIT);
+		bits[int64_t(m) - 1 - (offset - int64_t(sizeof(int_t)) * int64_t(CHAR_BIT) + 1) / int64_t(sizeof(int_t) * CHAR_BIT)] |= (int_t(1) << (offset % (sizeof(int_t) * CHAR_BIT)));
+	}
 	int_t operator%(int_t mod)const{
 		return smallmod<0>(mod, 0);
 	}
@@ -192,6 +291,32 @@ struct fixed{
 			smalldiv<i + 1>(div, ncarry << sizeof(int_t) * CHAR_BIT);
 		}
 	}
+	fixed operator/=(const fixed<m,n, int_t>& o)const{
+		auto x = *this / o;
+		std::copy(x.begin(), x.end(), begin());
+		return this;
+	}
+	fixed operator/(int_t o)const{
+		fixed<m,n,int_t> copy(*this);
+		copy /= o;
+		return copy;
+	}
+	fixed operator+(const fixed<m,n, int_t>& o)const{
+		fixed<m,n,int_t> copy(*this);
+		copy += o;
+		return copy;
+	}
+	fixed operator-(const fixed<m,n, int_t>& o)const{
+		fixed<m,n,int_t> copy(*this);
+		copy -= o;
+		return copy;
+	}
+	fixed& operator*=(const fixed<m,n, int_t>& o){
+		auto x = *this * o;
+		std::copy(x.begin(), x.end(), begin());
+		return this;
+	}
+	#ifdef GMP_CONVERSIONS
 	mpf_class to_gmp_float()const{
 		mpf_class ret(0, bits.size() * 64 + 128);
 		for(ssize_t i = 0;i < bits.size();i++){
@@ -206,6 +331,7 @@ struct fixed{
 		}
 		return ret;
 	}
+	#endif
 	template<size_t i = m - 1>
 	bool has_bits_before()const{
 		if(bits[i]){
@@ -272,6 +398,65 @@ struct fixed{
 	int_t& operator[](size_t i){
 		return bits[i];
 	}
+	int_t lzcnt(){
+		int_t cnt = 0;
+		size_t i = 0;
+		while(bits[i] == 0)i++;
+		return i*sizeof(int_t) * CHAR_BIT + lzcnt_intrinsic(bits[i]);
+	}
+	int_t tzcnt(){
+		int_t cnt = 0;
+		size_t i = m + n;
+		while(bits[--i] == 0);
+		return (m + n - 1 - i)*sizeof(int_t) * CHAR_BIT + tzcnt_intrinsic(bits[i]);
+	}
+	int_t popcnt(){
+		int_t acc = 0;
+		for(size_t i = 0;i < m+n;i++){
+			acc += popcnt_intrinsic(bits[i]);
+		}
+		return acc;
+	}
+	bool operator==(const fixed<m, n>& o)const{
+		for(size_t i = 0;i < m + n;i++){
+			if(bits[i] != o[i])return false;
+		}
+		return true;
+	}
+	bool operator!=(const fixed<m, n>& o)const{
+		for(size_t i = 0;i < m + n;i++){
+			if(bits[i] != o[i])return true;
+		}
+		return false;
+	}
+	bool operator>(const fixed<m, n>& o)const{
+		for(size_t i = 0;i < m + n - 1;i++){
+			if(o[i] > bits[i])return false;
+			if(bits[i] > o[i])return true;
+		}
+		return bits.back() > o.bits.back();
+	}
+	bool operator>=(const fixed<m, n>& o)const{
+		for(size_t i = 0;i < m + n - 1;i++){
+			if(o[i] > bits[i])return false;
+			if(bits[i] > o[i])return true;
+		}
+		return bits.back() >= o.bits.back();
+	}
+	bool operator<(const fixed<m, n>& o)const{
+		for(size_t i = 0;i < m + n - 1;i++){
+			if(o[i] < bits[i])return false;
+			if(bits[i] < o[i])return true;
+		}
+		return bits.back() < o.bits.back();
+	}
+	bool operator<=(const fixed<m, n>& o)const{
+		for(size_t i = 0;i < m + n - 1;i++){
+			if(o[i] < bits[i])return false;
+			if(bits[i] < o[i])return true;
+		}
+		return bits.back() <= o.bits.back();
+	}
 	fixed operator<<(int64_t c)const{
 		fixed a(*this);
 		a.shiftLeft(c);
@@ -282,16 +467,16 @@ struct fixed{
 		a.shiftRight(c);
 		return a;
 	}
-	fixed operator<<=(int64_t c){
+	fixed& operator<<=(int64_t c){
 		shiftLeft(c);
 		return *this;
 	}
-	fixed operator>>=(int64_t c){
+	fixed& operator>>=(int64_t c){
 		shiftRight(c);
 		return *this;
 	}
 	void shiftLeft(const int64_t c){
-		if(c < 0)shiftRight(-c);
+		if(c < 0){shiftRight(-c);return;}
 		if(c == 0)return;
 		if(c >= (m + n) * sizeof(int_t) * CHAR_BIT){
 			std::fill(begin(), end(), 0);
@@ -300,7 +485,7 @@ struct fixed{
 		const int64_t cs = c / (CHAR_BIT * sizeof(int_t));
 		const int64_t bs = c % (CHAR_BIT * sizeof(int_t));
 		for(size_t i = 0;i < m + n - cs - 1;i++){
-			bits[i] = bits[i + cs] << bs | bits[i + cs + 1] >> (64 - bs);
+			bits[i] = bits[i + cs] << bs | bits[i + cs + 1] >> (CHAR_BIT * sizeof(int_t) - bs);
 		}
 		bits[m + n - cs - 1] = bits.back() << bs;
 		for(size_t i = m + n - cs; i < m + n;i++){
@@ -308,7 +493,7 @@ struct fixed{
 		}
 	}
 	void shiftRight(const int64_t c){
-		if(c < 0)shiftLeft(-c);
+		if(c < 0){shiftLeft(-c);return;}
 		if(c == 0)return;
 		if(c >= (m + n) * sizeof(int_t) * CHAR_BIT){
 			std::fill(begin(), end(), 0);
@@ -317,7 +502,7 @@ struct fixed{
 		const int64_t cs = c / (CHAR_BIT * sizeof(int_t));
 		const int64_t bs = c % (CHAR_BIT * sizeof(int_t));
 		for(int64_t i = m + n - 1;i >= cs + 1;i--){
-			bits[i] = bits[i - cs] >> bs | bits[i - cs - 1] << (64 - bs);
+			bits[i] = bits[i - cs] >> bs | bits[i - cs - 1] << (CHAR_BIT * sizeof(int_t) - bs);
 		}
 		bits[cs] = bits.front() >> bs;
 		for(size_t i = 0; i < cs;i++){
@@ -325,12 +510,30 @@ struct fixed{
 		}
 	}
 	constexpr auto begin(){return bits.begin();}
-	constexpr auto cbegin(){return bits.cbegin();}
+	constexpr auto cbegin()const{return bits.cbegin();}
 	constexpr auto rbegin(){return bits.rbegin();}
-	constexpr auto crbegin(){return bits.crbegin();}
+	constexpr auto crbegin()const{return bits.crbegin();}
 	constexpr auto   end(){return bits.  end();}
-	constexpr auto  cend(){return bits. cend();}
+	constexpr auto  cend()const{return bits. cend();}
 	constexpr auto  rend(){return bits. rend();}
-	constexpr auto crend(){return bits.crend();}
+	constexpr auto crend()const{return bits.crend();}
+	constexpr auto begin()const{return bits.begin();}
+	constexpr auto rbegin()const{return bits.rbegin();}
+	constexpr auto   end()const{return bits.  end();}
+	constexpr auto  rend()const{return bits. rend();}
+	std::string bitstring(){
+		std::string ret(bits.size() * sizeof(int_t) * CHAR_BIT + 1,'0');
+		size_t adder = 0;
+		for(size_t i = 0;i < bits.size();i++){
+			for(size_t j = 1;j <= CHAR_BIT * sizeof(int_t);j++){
+				ret[i * CHAR_BIT * sizeof(int_t) + j - 1 + adder] = '0' + !!(bits[i] & (int_t(1) << (CHAR_BIT * sizeof(int_t) - j)));
+			}
+			if(i == m - 1){
+				adder = 1;
+				ret[(i + 1) * CHAR_BIT * sizeof(int_t)] = '.';
+			}
+		}
+		return ret;
+	}
 };
 #endif
