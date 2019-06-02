@@ -41,7 +41,6 @@ template<>
 char adc_intrinsic<uint32_t>(char in_flag, uint32_t a, uint32_t b, uint32_t* stor){
 	return _addcarry_u32(in_flag, a, b, (unsigned int*)stor);
 };
-
 template<typename int_t> char sbb_intrinsic(char in_flag, int_t a, int_t b, int_t* stor){return 0;};
 
 template<>
@@ -65,6 +64,37 @@ uint32_t mul_intrinsic<uint32_t>(uint32_t a, uint32_t b, uint32_t* hi){
 	_a *= (uint64_t)b;
 	*hi = _a >> 32;
 	return _a;
+};
+template<typename T>
+struct float_info{
+};
+template<>
+struct float_info<float>{
+	std::uint32_t mantissa;
+	std::int16_t exponent;
+	bool sign;
+	float_info(float a){
+		std::uint32_t val = *reinterpret_cast<std::uint32_t*>(&a);
+		mantissa = val & ((1u << 23) - 1);
+		val >>= 23;
+		exponent = val & ((1u << 8) - 1);
+		val >>= 8;
+		sign = !!val;
+	}
+};
+template<>
+struct float_info<double>{
+	std::uint64_t mantissa;
+	std::int16_t exponent;
+	bool sign;
+	float_info(double a){
+		std::uint64_t val = *reinterpret_cast<std::uint64_t*>(&a);
+		mantissa = val & ((1ULL << 52) - 1);
+		val >>= 52;
+		exponent = val & ((1ULL << 11) - 1);
+		val >>= 11;
+		sign = !!val;
+	}
 };
 template<typename int_t>
 int_t lzcnt_intrinsic(int_t x){
@@ -139,11 +169,19 @@ struct fixed{
 	std::array<int_t, m + n> bits;
 	static constexpr size_t M = m;
 	static constexpr size_t N = n;
-	fixed(std::initializer_list<int_t> init){
+	fixed(std::initializer_list<int_t> init) : fixed(){
 		std::copy(init.begin(), init.end(), bits.begin());
 	}
 	fixed(){
 		std::fill(bits.begin(), bits.end(), 0);
+	}
+	fixed(double x) : fixed(){
+		float_info<double> info(x);
+		std::uint64_t val = *reinterpret_cast<std::uint64_t*>(&x);
+		
+		bits[m] = info.mantissa << 12;
+		bits[m - 1] = 1;
+		shiftLeft(info.exponent);
 	}
 	template<typename RNG>
 	fixed(RNG& gen, bool dummy){
@@ -318,11 +356,11 @@ struct fixed{
 	}
 	#ifdef GMP_CONVERSIONS
 	mpf_class to_gmp_float()const{
-		mpf_class ret(0, bits.size() * 64 + 128);
+		mpf_class ret(0, bits.size() * sizeof(int_t) * CHAR_BIT + 64);
 		for(ssize_t i = 0;i < bits.size();i++){
-			mpf_class two(2, bits.size() * 64 + 128);
-			mpf_class one(1, bits.size() * 64 + 128); 
-			mpf_pow_ui(two.get_mpf_t(), two.get_mpf_t(), 64 * std::abs(ssize_t(m) - i - 1));
+			mpf_class two(2, bits.size() * sizeof(int_t) * CHAR_BIT + 64);
+			mpf_class one(1, bits.size() * sizeof(int_t) * CHAR_BIT + 64); 
+			mpf_pow_ui(two.get_mpf_t(), two.get_mpf_t(), sizeof(int_t) * CHAR_BIT * std::abs(ssize_t(m) - i - 1));
 			if(ssize_t(m) - i - 1 < 0){
 				mpf_div(two.get_mpf_t(), one.get_mpf_t(), two.get_mpf_t());
 			}
